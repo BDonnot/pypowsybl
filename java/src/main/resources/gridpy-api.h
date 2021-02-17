@@ -1,3 +1,8 @@
+typedef struct result_struct {
+    void* ptr;
+    char* error_message;
+} result;
+
 typedef struct array_struct {
     void* ptr;
     int length;

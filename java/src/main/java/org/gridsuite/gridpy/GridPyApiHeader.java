@@ -16,12 +16,29 @@ import org.graalvm.nativeimage.c.struct.CStruct;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CDoublePointer;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.WordBase;
 
 /**
  * @author Geoffroy Jamgotchian {@literal <geoffroy.jamgotchian at rte-france.com>}
  */
 @CContext(Directives.class)
 public class GridPyApiHeader {
+
+    @CStruct("result")
+    interface ResultPointer<T extends WordBase> extends PointerBase {
+
+        @CField("ptr")
+        T getPtr();
+
+        @CField("ptr")
+        void setPtr(T ptr);
+
+        @CField("error_message")
+        CCharPointer getErrorMessage();
+
+        @CField("error_message")
+        void setErrorMessage(CCharPointer errorMessage);
+    }
 
     @CStruct("array")
     interface ArrayPointer<T extends PointerBase> extends PointerBase {
