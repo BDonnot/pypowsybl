@@ -53,3 +53,18 @@ build/*
 
 *.orig
 
+demo/*.xiidm
+demo/*.json
+demo/*.mat
+demo/*.bz2
+demo/*.zip
+demo/*.xml
+demo/*.arc
+demo/*.zst
+demo/.ipynb_checkpoints
+to_build
+demo/Makefile
+demo/test_iidm4cpp.cpp
+demo/test_iidm4cpp.h
+demo/Load a grid from matpower.ipynb
+

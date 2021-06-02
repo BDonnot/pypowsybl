@@ -15,8 +15,8 @@ from setuptools.command.install import install
 from setuptools.command.build_ext import build_ext
 from distutils.version import LooseVersion
 
-
 extra_jars = ''
+
 
 class PyPowsyblExtension(Extension):
     def __init__(self):

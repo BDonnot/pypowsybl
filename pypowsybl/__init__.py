@@ -23,7 +23,8 @@ __all__ = [
     "network",
     "loadflow",
     "security",
-    "sensitivity"
+    "sensitivity",
+    "grid2op_backend"
 ]
 
 
