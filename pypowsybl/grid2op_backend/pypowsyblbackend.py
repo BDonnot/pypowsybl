@@ -20,34 +20,79 @@ import pypowsybl as pypo
 
 
 class PyPowSyBlBackend(Backend):
-    def __init__(self, detailed_infos_for_cascading_failures=False, provider=None):
+    def __init__(self,
+                 detailed_infos_for_cascading_failures=False,
+                 provider=None,
+                 parameters=None):
         Backend.__init__(self, detailed_infos_for_cascading_failures=detailed_infos_for_cascading_failures)
         warnings.warn("This backend does not totally implements the grid2op requirement yet. This is an attempt to "
                       "use it!")
         self._nb_real_line_pandapower = None
 
-        self._provider = provider  # can be anything to pass to `pp.loadflow.run_ac(n, provider="Hades2")` call
+        if provider is None:
+            self._provider = 'OpenLoadFlow'
+        else:
+            # can be anything to pass to `pp.loadflow.run_ac(n, provider="Hades2")` call
+            self._provider = provider
+        if parameters is None:
+            self._parameters = pypo.loadflow.Parameters()
+        else:
+            if not isinstance(parameters, pypo.loadflow.Parameters):
+                raise BaseException(f"When building a PyPowSyBlBackend, the \"parameters\" argument should either be "
+                                    f"None (to use the default pypowsybl parameters) or an instance of "
+                                    f"\"pypo.loadflow.Parameters\". You provided an object of type: "
+                                    f"{type(parameters)}")
+            self._parameters = parameters
 
-        self.p_or = None
-        self.q_or = None
-        self.v_or = None
-        self.a_or = None
-        self.p_ex = None
-        self.q_ex = None
-        self.v_ex = None
-        self.a_ex = None
-        self.load_p = None
-        self.load_q = None
-        self.load_v = None
-        self.storage_p = None
-        self.storage_q = None
-        self.storage_v = None
-        self.prod_p = None
-        self.prod_q = None
-        self.prod_v = None
-        self.line_status = None
+        # this backend has the possibility to compute the "theta" (voltage angle)
+        self.can_output_theta = True
+
+        self._p_or = None
+        self._q_or = None
+        self._v_or = None
+        self._a_or = None
+        self._theta_or = None
+        self._p_ex = None
+        self._q_ex = None
+        self._v_ex = None
+        self._a_ex = None
+        self._theta_ex = None
+        self._load_p = None
+        self._load_q = None
+        self._load_v = None
+        self._load_theta = None
+        self._prod_p = None
+        self._prod_q = None
+        self._prod_v = None
+        self._gen_theta = None
+        self._line_status = None
+        self._storage_theta = None  # TODO
+        self._storage_p = None
+        self._storage_q = None
+        self._storage_v = None
+
+        # convert pair unit to kv
+        self._gen_vn_kv = None
+
+        self._bus_df = None
+        self._volt_df = None
+
+        # for faster copy when object are returned
+        self.cst_1 = dt_float(1.0)
 
     def load_grid(self, path=None, filename=None):
+        """
+        We suppose that the file given as argument contains one bus per substation.
+
+        Parameters
+        ----------
+        path
+        filename
+
+        Returns
+        -------
+
+        """
         if path is None and filename is None:
             raise RuntimeError("You must provide at least one of path or file to load a powergrid.")
         if path is None:
@@ -61,9 +106,14 @@ class PyPowSyBlBackend(Backend):
 
         # TODO not working completely yet
         self._grid = pypo.network.load(full_path)
+        self._volt_df = self._grid.create_voltage_levels_data_frame()
+
+        df = self._grid.create_generators_data_frame()
+        self._gen_vn_kv = 1.0 * self._volt_df.loc[df["voltage_level_id"]]["nominal_v"].values
+        self._gen_vn_kv = self._gen_vn_kv.astype(dt_float)
 
         # number of each types of elements
-        self.n_sub = self._grid.create_substations_data_frame().shape[0]
+        self.n_sub = self._grid.create_buses_data_frame().shape[0]  # self._grid.create_substations_data_frame().shape[0]
         self.n_line = self._grid.create_lines_data_frame().shape[0]
         self.n_line += self._grid.create_2_windings_transformers_data_frame().shape[0]
         self.n_gen = len(self._grid.generators)
@@ -86,37 +136,44 @@ class PyPowSyBlBackend(Backend):
         # TODO storage_to_subid
         # TODO shunt_to_subid
 
-        self._compute_pos_big_topo()
-
-        # retrieve the names
-        self.name_load = [el for el in self._grid.create_loads_data_frame().index]
-        self.name_gen = [el for el in self._grid.create_generators_data_frame().index]
+        # retrieve the names of the elements
+        self.name_load = np.array([el for el in self._grid.create_loads_data_frame().index])
+        self.name_gen = np.array([el for el in self._grid.create_generators_data_frame().index])
         self.name_line = [el for el in self._grid.create_lines_data_frame().index]
         self.name_line += [el for el in self._grid.create_2_windings_transformers_data_frame().index]
-        self.name_sub = [el for el in self._grid.create_buses_data_frame().index]
+        self.name_line = np.array(self.name_line)
+        self.name_sub = np.array([el for el in self._grid.create_buses_data_frame().index])
+
+        self._compute_pos_big_topo()  # mandatory for grid2op.Backend
+
+
         # TODO name_storage
         # TODO name_shunt
 
         # intermediate attribute read from the grid java side
-        self.p_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.q_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.v_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.a_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.p_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.q_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.v_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        self.a_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._p_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._q_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._v_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._a_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._p_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._q_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._v_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._a_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
         # self.line_status = np.full(self.n_line, dtype=dt_bool, fill_value=np.NaN)  # TODO
-        self.load_p = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
-        self.load_q = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
-        self.load_v = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
-        self.prod_p = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.prod_v = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.prod_q = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
-        self.storage_p = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
-        self.storage_q = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
-        self.storage_v = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
-
+        self._load_p = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self._load_q = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self._load_v = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self._prod_p = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self._prod_v = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self._prod_q = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self._storage_p = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
+        self._storage_q = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
+        self._storage_v = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
+        self._theta_or = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._theta_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
+        self._load_theta = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
+        self._gen_theta = np.full(self.n_gen, dtype=dt_float, fill_value=np.NaN)
+        self._storage_theta = np.full(self.n_storage, dtype=dt_float, fill_value=np.NaN)
 
     def apply_action(self, backendAction=None):
         """
@@ -130,17 +187,26 @@ class PyPowSyBlBackend(Backend):
 
         active_bus, (prod_p, prod_v, load_p, load_q, storage), _, shunts__ = backendAction()
 
-        # TODO code that !
-        for gen_id, new_p in prod_p:
-            self._grid.gen["p_mw"].iloc[gen_id] = new_p
-        for gen_id, new_v in prod_v:
-            self._grid.gen["vm_pu"].iloc[gen_id] = new_v  # but new_v is not pu !
-            self._grid.gen["vm_pu"].iloc[gen_id] /= self._grid.bus["vn_kv"][self.gen_to_subid[gen_id]]  # now it is :-)
+        # modify loads
+        if load_p.changed.any():
+            df_load_p = pd.DataFrame({'p0': load_p.values[load_p.changed]}, index=self.name_load[load_p.changed])
+            self._grid.update_loads_with_data_frame(df_load_p)
+        if load_q.changed.any():
+            df_load_q = pd.DataFrame({'q0': load_q.values[load_q.changed]}, index=self.name_load[load_q.changed])
+            self._grid.update_loads_with_data_frame(df_load_q)
 
-        for load_id, new_p in load_p:
-            self._grid.load["p_mw"].iloc[load_id] = new_p
-        for load_id, new_q in load_q:
-            self._grid.load["q_mvar"].iloc[load_id] = new_q
+        # modify generators.
+        if prod_p.changed.any():
+            df_gen_p = pd.DataFrame({'target_p': prod_p.values[prod_p.changed]}, index=self.name_gen[prod_p.changed])
+            self._grid.update_generators_with_data_frame(df_gen_p)
+
+        # TODO check pair unit
+        if prod_v.changed.any():
+            arr_kv = prod_v.values[prod_v.changed]
+            arr_pu = arr_kv / self._gen_vn_kv
+            df_gen_v = pd.DataFrame({'target_v': arr_pu}, index=self.name_gen[prod_v.changed])
+            self._grid.update_generators_with_data_frame(df_gen_v)
+
         # TODO storage
         # TODO shunts
 
@@ -148,6 +214,7 @@ class PyPowSyBlBackend(Backend):
 
     def runpf(self, is_dc=False):
         try:
+            self._bus_df = None  # forget the previous information for the buses
             beg_ = time.time()
             if is_dc:
                 results = pypo.loadflow.run_dc(self._grid)
@@ -165,10 +232,10 @@ class PyPowSyBlBackend(Backend):
 
             if conv:
                 # retrieve the data
+                self._bus_df = self._grid.create_buses_data_frame()
                 self._generators_info()
                 self._loads_info()
-                self._lines_or_info()
-                self._lines_ex_info()
+                self._lines_info()
                 # TODO shunt and storage
 
             return conv, exc_
@@ -186,41 +253,92 @@ class PyPowSyBlBackend(Backend):
     def reset(self, path=None, grid_filename=None):
         # TODO not coded at the moment
         self.comp_time = 0.
-        pass
+        self._p_or[:] = np.NaN
+        self._q_or[:] = np.NaN
+        self._v_or[:] = np.NaN
+        self._a_or[:] = np.NaN
+        self._p_ex[:] = np.NaN
+        self._q_ex[:] = np.NaN
+        self._v_ex[:] = np.NaN
+        self._a_ex[:] = np.NaN
+        # self.line_status = np.full(self.n_line, dtype=dt_bool, fill_value=np.NaN)  # TODO
+        self._load_p[:] = np.NaN
+        self._load_q[:] = np.NaN
+        self._load_v[:] = np.NaN
+        self._prod_p[:] = np.NaN
+        self._prod_v[:] = np.NaN
+        self._prod_q[:] = np.NaN
+        self._storage_p[:] = np.NaN
+        self._storage_q[:] = np.NaN
+        self._storage_v[:] = np.NaN
+        self._theta_or[:] = np.NaN
+        self._theta_ex[:] = np.NaN
+        self._load_theta[:] = np.NaN
+        self._gen_theta[:] = np.NaN
+        self._storage_theta[:] = np.NaN
 
+    # interface to retrieve the information
     def generators_info(self):
-        return self.prod_p, self.prod_q, self.prod_v
+        return self.cst_1 * self._prod_p, self.cst_1 * self._prod_q, self.cst_1 * self._prod_v
 
     def loads_info(self):
-        return self.load_p, self.load_q, self.load_v
+        return self.cst_1 * self._load_p, self.cst_1 * self._load_q, self.cst_1 * self._load_v
 
     def lines_or_info(self):
-        return self.p_or, self.q_or, self.v_or, self.a_or
+        return self.cst_1 * self._p_or, self.cst_1 * self._q_or, self.cst_1 * self._v_or, self.cst_1 * self._a_or
 
     def lines_ex_info(self):
-        return self.p_ex, self.q_ex, self.v_ex, self.a_ex
+        return self.cst_1 * self._p_ex, self.cst_1 * self._q_ex, self.cst_1 * self._v_ex, self.cst_1 * self._a_ex
+    # TODO storage and shunt !
 
-    # tmp method, to read data once
+    def get_theta(self):
+        return self.cst_1 * self._theta_or,  self.cst_1 * self._theta_ex, self.cst_1 * self._load_theta, \
+               self.cst_1 * self._gen_theta, self.cst_1 * self._storage_theta
+
+    # private methods: data are read from java side once and stored as temporary variables
     def _generators_info(self):
-        # carefull with copy / deep copy
+        # TODO check the convention for generators
         df = self._grid.create_generators_data_frame()
-        self.prod_p[:] = df["p"].values
-        self.prod_q[:] = df["q"].values
-        self.prod_v[:] = 1.0  # TODO !!!!
+        self._prod_p[:] = -df["p"].values
+        self._prod_q[:] = -df["q"].values
+        df_volt = self._bus_df.loc[df["bus_id"]]
+        self._prod_v[:] = df_volt["v_mag"].values  # in pu
+        self._prod_v[:] *= self._volt_df.loc[df["voltage_level_id"]]["nominal_v"].values
+        self._gen_theta[:] = df_volt["v_angle"].values
 
     def _loads_info(self):
         """
         We chose to keep the same order in grid2op and in pandapower. So we just return the correct values.
         """
-        df = self._grid.create_generators_data_frame()
-        self.load_p[:] = df["p"].values
-        self.laod_q[:] = df["q"].values
-        self.load_v[:] = 1.0  # TODO !!!!
+        df = self._grid.create_loads_data_frame()
+        self._load_p[:] = df["p"].values
+        self._load_q[:] = df["q"].values
+        df_volt = self._bus_df.loc[df["bus_id"]]
+        self._load_v[:] = df_volt["v_mag"].values  # in pu
+        self._load_v[:] *= self._volt_df.loc[df["voltage_level_id"]]["nominal_v"].values
+        self._load_theta[:] = df_volt["v_angle"].values
 
-    def _lines_or_info(self):
-        pass
+    def _lines_info(self):
+        df_l = self._grid.create_lines_data_frame()
+        df_t = self._grid.create_2_windings_transformers_data_frame()
+        self._p_or[:] = np.concatenate((df_l["p1"].values, df_t["p1"].values))
+        self._p_ex[:] = np.concatenate((df_l["p2"].values, df_t["p2"].values))
+        self._q_or[:] = np.concatenate((df_l["q1"].values, df_t["q1"].values))
+        self._q_ex[:] = np.concatenate((df_l["q2"].values, df_t["q2"].values))
+        df_volt_or = self._bus_df.loc[pd.concat((df_l["bus1_id"], df_t["bus1_id"]))]
+        self._v_or[:] = df_volt_or["v_mag"].values  # in pu
+        ind_volt = pd.concat((df_l["voltage_level1_id"], df_t["voltage_level1_id"]))
+        self._v_or[:] *= self._volt_df.loc[ind_volt]["nominal_v"].values
+        self._theta_or[:] = df_volt_or["v_angle"].values
 
-    def _lines_ex_info(self):
-        pass
+        df_volt_ex = self._bus_df.loc[pd.concat((df_l["bus2_id"], df_t["bus2_id"]))]
+        self._v_ex[:] = df_volt_ex["v_mag"].values  # in pu
+        ind_volt_ex = pd.concat((df_l["voltage_level2_id"], df_t["voltage_level2_id"]))
+        self._v_ex[:] *= self._volt_df.loc[ind_volt_ex]["nominal_v"].values
+        self._theta_ex[:] = df_volt_ex["v_angle"].values
 
-    # TODO get_line_status, _disconnect_line
+        # amps are not computed by pypowsybl...
+        self._a_or[:] = np.sqrt(self._p_or**2 + self._q_or**2) / (np.sqrt(3.) * self._v_or)
+        self._a_ex[:] = np.sqrt(self._p_ex**2 + self._q_ex**2) / (np.sqrt(3.) * self._v_ex)
+
+    # TODO get_line_status, _disconnect_line, get_topo_vect
