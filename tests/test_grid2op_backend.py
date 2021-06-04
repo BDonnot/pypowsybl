@@ -88,7 +88,7 @@ class PyPowSyBlBackendTestCases_0(unittest.TestCase):
         act.set_line_status = [(line_id, -1)]
         self.bk_act += act
         self.backend.apply_action(self.bk_act)
-        conv, reason = self.backend.runpf(is_dc=True)
+        conv, reason = self.backend.runpf()
         assert conv
         assert self.backend._p_or[line_id] == 0.
         assert self.backend._p_ex[line_id] == 0.
@@ -99,7 +99,7 @@ class PyPowSyBlBackendTestCases_0(unittest.TestCase):
         self.bk_act = type(self.backend).my_bk_act_class()
         self.bk_act += act
         self.backend.apply_action(self.bk_act)
-        conv, reason = self.backend.runpf(is_dc=True)
+        conv, reason = self.backend.runpf()
         assert conv
         assert self.backend._p_or[line_id] != 0.
         assert self.backend._p_ex[line_id] != 0.
@@ -109,7 +109,7 @@ class PyPowSyBlBackendTestCases_0(unittest.TestCase):
         act.set_line_status = [(trafo_id, -1)]
         self.bk_act += act
         self.backend.apply_action(self.bk_act)
-        conv, reason = self.backend.runpf(is_dc=True)
+        conv, reason = self.backend.runpf()
         assert conv
         assert self.backend._p_or[trafo_id] == 0.
         assert self.backend._p_ex[trafo_id] == 0.
@@ -120,11 +120,26 @@ class PyPowSyBlBackendTestCases_0(unittest.TestCase):
         self.bk_act = type(self.backend).my_bk_act_class()
         self.bk_act += act
         self.backend.apply_action(self.bk_act)
-        conv, reason = self.backend.runpf(is_dc=True)
+        conv, reason = self.backend.runpf()
         assert conv
         assert self.backend._p_or[trafo_id] != 0.
         assert self.backend._p_ex[trafo_id] != 0.
         assert self.backend._a_or[trafo_id] != 0.
+
+    def test_gen_v(self):
+        """test that the pair unit is correctly implemented"""
+        conv, reason = self.backend.runpf()
+        assert conv
+
+        gen_v = 1.0 * self.backend._prod_v
+        mult_fact = 1.05
+        act = self.act_space({"injection": {"prod_v": mult_fact * gen_v}})
+        self.bk_act += act
+        self.backend.apply_action(self.bk_act)
+        conv, reason = self.backend.runpf()
+        assert conv
+        # it's true because in this testcase there is no limit on the gen_q
+        assert np.max(np.abs(self.backend._prod_v - mult_fact * gen_v)) <= self.tol
 
 
 if __name__ == '__main__':
