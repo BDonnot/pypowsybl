@@ -159,7 +159,7 @@ class PyPowSyBlBackend(Backend):
         self._q_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
         self._v_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
         self._a_ex = np.full(self.n_line, dtype=dt_float, fill_value=np.NaN)
-        # self.line_status = np.full(self.n_line, dtype=dt_bool, fill_value=np.NaN)  # TODO
+        self._line_status = np.full(self.n_line, dtype=dt_bool, fill_value=np.NaN)
         self._load_p = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
         self._load_q = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
         self._load_v = np.full(self.n_load, dtype=dt_float, fill_value=np.NaN)
@@ -211,6 +211,21 @@ class PyPowSyBlBackend(Backend):
         # TODO shunts
 
         # TODO topology !!!
+
+        # line status
+        lor_bus = backendAction.get_lines_or_bus()
+        lex_bus = backendAction.get_lines_ex_bus()
+        for l_id in range(self.n_line):
+            if lor_bus[l_id] == -1 or lex_bus[l_id] == -1:
+                if self._line_status[l_id]:
+                    # disconnect the powerline as it was connected
+                    self._grid.disconnect(self.name_line[l_id])
+                    self._line_status[l_id] = False
+            elif lor_bus[l_id] > 0 and lex_bus[l_id] > 0:
+                if not self._line_status[l_id]:
+                    # reconnect the powerline as it has been disconnected
+                    self._grid.connect(self.name_line[l_id])
+                    self._line_status[l_id] = True
 
     def runpf(self, is_dc=False):
         try:
@@ -325,20 +340,42 @@ class PyPowSyBlBackend(Backend):
         self._p_ex[:] = np.concatenate((df_l["p2"].values, df_t["p2"].values))
         self._q_or[:] = np.concatenate((df_l["q1"].values, df_t["q1"].values))
         self._q_ex[:] = np.concatenate((df_l["q2"].values, df_t["q2"].values))
-        df_volt_or = self._bus_df.loc[pd.concat((df_l["bus1_id"], df_t["bus1_id"]))]
-        self._v_or[:] = df_volt_or["v_mag"].values  # in pu
-        ind_volt = pd.concat((df_l["voltage_level1_id"], df_t["voltage_level1_id"]))
-        self._v_or[:] *= self._volt_df.loc[ind_volt]["nominal_v"].values
-        self._theta_or[:] = df_volt_or["v_angle"].values
 
-        df_volt_ex = self._bus_df.loc[pd.concat((df_l["bus2_id"], df_t["bus2_id"]))]
-        self._v_ex[:] = df_volt_ex["v_mag"].values  # in pu
+        df_lines_nm = pd.concat((df_l["bus1_id"], df_t["bus1_id"]))
+        df_lines_nm = df_lines_nm[df_lines_nm != '']
+        df_volt_or = self._bus_df.loc[df_lines_nm]
+        self._v_or[self._line_status] = df_volt_or["v_mag"].values  # in pu
+        ind_volt = pd.concat((df_l["voltage_level1_id"], df_t["voltage_level1_id"]))
+        self._v_or[self._line_status] *= self._volt_df.loc[ind_volt]["nominal_v"].values[self._line_status]
+        self._theta_or[self._line_status] = df_volt_or["v_angle"].values
+
+        df_lines_nm2 = pd.concat((df_l["bus2_id"], df_t["bus2_id"]))
+        df_lines_nm2 = df_lines_nm2[df_lines_nm2 != '']
+        df_volt_ex = self._bus_df.loc[df_lines_nm2]
+        self._v_ex[self._line_status] = df_volt_ex["v_mag"].values  # in pu
         ind_volt_ex = pd.concat((df_l["voltage_level2_id"], df_t["voltage_level2_id"]))
-        self._v_ex[:] *= self._volt_df.loc[ind_volt_ex]["nominal_v"].values
-        self._theta_ex[:] = df_volt_ex["v_angle"].values
+        self._v_ex[self._line_status] *= self._volt_df.loc[ind_volt_ex]["nominal_v"].values[self._line_status]
+        self._theta_ex[self._line_status] = df_volt_ex["v_angle"].values
 
         # amps are not computed by pypowsybl...
-        self._a_or[:] = np.sqrt(self._p_or**2 + self._q_or**2) / (np.sqrt(3.) * self._v_or)
-        self._a_ex[:] = np.sqrt(self._p_ex**2 + self._q_ex**2) / (np.sqrt(3.) * self._v_ex)
+        self._a_or[self._line_status] = np.sqrt(self._p_or[self._line_status]**2 + self._q_or[self._line_status]**2)
+        self._a_or[self._line_status] /= np.sqrt(3.) * self._v_or[self._line_status]
+        self._a_ex[self._line_status] = np.sqrt(self._p_ex[self._line_status]**2 + self._q_ex[self._line_status]**2)
+        self._a_ex[self._line_status] /= np.sqrt(3.) * self._v_ex[self._line_status]
 
-    # TODO get_line_status, _disconnect_line, get_topo_vect
+        # handle non connected lines (they are not updated in the lines above)
+        self._v_or[~self._line_status] = 0.
+        self._v_ex[~self._line_status] = 0.
+        self._a_or[~self._line_status] = 0.
+        self._a_ex[~self._line_status] = 0.
+
+        # powsybl assign Nan to non connected lines, in grid2op we expect 0.
+        self._p_or[~self._line_status] = 0.
+        self._p_ex[~self._line_status] = 0.
+        self._q_or[~self._line_status] = 0.
+        self._q_ex[~self._line_status] = 0.
+
+    def _disconnect_line(self, id_):
+        self._grid.disconnect(self.name_line[id_])
+
+    # TODO get_line_status, get_topo_vect

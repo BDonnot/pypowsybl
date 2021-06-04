@@ -13,7 +13,6 @@ import numpy as np
 
 from grid2op.Action import ActionSpace
 from grid2op.Rules import AlwaysLegal
-import pypowsybl as pypo
 from pypowsybl.network import create_ieee14
 from pypowsybl.grid2op_backend import PyPowSyBlBackend
 
@@ -79,7 +78,54 @@ class PyPowSyBlBackendTestCases_0(unittest.TestCase):
         conv, reason = self.backend.runpf()
         assert conv
 
+    def test_disco_reco_lines(self):
+        """In this test i check that i can connect and disconnect powerlines or transformers"""
+        act = self.act_space()
+        line_id = 0
+        trafo_id = 18
+
+        # disco the powerline
+        act.set_line_status = [(line_id, -1)]
+        self.bk_act += act
+        self.backend.apply_action(self.bk_act)
+        conv, reason = self.backend.runpf(is_dc=True)
+        assert conv
+        assert self.backend._p_or[line_id] == 0.
+        assert self.backend._p_ex[line_id] == 0.
+        assert self.backend._a_or[line_id] == 0.
+
+        # reco the powerline
+        act.set_line_status = [(line_id, +1)]
+        self.bk_act = type(self.backend).my_bk_act_class()
+        self.bk_act += act
+        self.backend.apply_action(self.bk_act)
+        conv, reason = self.backend.runpf(is_dc=True)
+        assert conv
+        assert self.backend._p_or[line_id] != 0.
+        assert self.backend._p_ex[line_id] != 0.
+        assert self.backend._a_or[line_id] != 0.
+
+        # disco the trafo
+        act.set_line_status = [(trafo_id, -1)]
+        self.bk_act += act
+        self.backend.apply_action(self.bk_act)
+        conv, reason = self.backend.runpf(is_dc=True)
+        assert conv
+        assert self.backend._p_or[trafo_id] == 0.
+        assert self.backend._p_ex[trafo_id] == 0.
+        assert self.backend._a_or[trafo_id] == 0.
+
+        # reco the trafo
+        act.set_line_status = [(trafo_id, +1)]
+        self.bk_act = type(self.backend).my_bk_act_class()
+        self.bk_act += act
+        self.backend.apply_action(self.bk_act)
+        conv, reason = self.backend.runpf(is_dc=True)
+        assert conv
+        assert self.backend._p_or[trafo_id] != 0.
+        assert self.backend._p_ex[trafo_id] != 0.
+        assert self.backend._a_or[trafo_id] != 0.
+
 
 if __name__ == '__main__':
-        unittest.main()
-
+    unittest.main()
